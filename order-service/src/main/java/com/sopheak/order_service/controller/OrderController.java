@@ -4,6 +4,8 @@ import com.sopheak.order_service.entity.Order;
 import com.sopheak.order_service.service.OrderService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import com.sopheak.order_service.dto.OrderRequest;
+import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/api/orders")
@@ -17,14 +19,12 @@ public class OrderController {
 
     @PostMapping
     public ResponseEntity<Order> createOrder(
-            @RequestParam String customerName,
-            @RequestParam String productName,
-            @RequestParam Integer quantity
+            @Valid @RequestBody OrderRequest request
     ) {
         Order order = orderService.createOrder(
-                customerName,
-                productName,
-                quantity
+                request.getCustomerName(),
+                request.getProductName(),
+                request.getQuantity()
         );
 
         return ResponseEntity.ok(order);
