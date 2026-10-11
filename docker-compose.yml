@@ -1,38 +1,117 @@
 services:
 
+  # =========================
+  # PostgreSQL - Order Service
+  # =========================
   postgres-order:
     image: postgres:17
-    container_name: postgres-order
     environment:
-      POSTGRES_DB: order_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
       - postgres_order_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d order_db"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
-    restart: unless-stopped
 
+
+  # =========================
+  # Kafka
+  # =========================
+  kafka:
+    image: apache/kafka:4.1.0
+    ports:
+      - "9092:9092"
+    environment:
+
+      KAFKA_NODE_ID: 1
+
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+
+  # =========================
+  # Order Service
+  # =========================
   order-service:
     build:
       context: ./order-service
-      dockerfile: Dockerfile
-    container_name: order-service
+    environment:
+      SERVER_PORT: 8081
+
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-order:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+    ports:
+      - "${ORDER_SERVICE_PORT}:8081"
+
     depends_on:
       postgres-order:
         condition: service_healthy
+
+      kafka:
+        condition: service_started
+
+
+  # =========================
+  # Inventory Service
+  # =========================
+  inventory-service:
+    build:
+      context: ./inventory-service
+
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-order:5432/order_db
-      SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: postgres
+      SERVER_PORT: 8082
+
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
     ports:
-      - "8081:8081"
-    restart: unless-stopped
+      - "8082:8082"
+
+    depends_on:
+      kafka:
+        condition: service_started
+    # =========================
+  # Notification Service
+  # =========================
+  notification-service:
+    build:
+      context: ./notification-service
+
+    environment:
+      SERVER_PORT: 8083
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+    ports:
+      - "8083:8083"
+
+    depends_on:
+      kafka:
+        condition: service_started
+
 
 volumes:
   postgres_order_data:
