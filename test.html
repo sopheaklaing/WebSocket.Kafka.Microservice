@@ -1,0 +1,43 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Notification WebSocket Test</title>
+</head>
+<body>
+  <h2>Order Notifications</h2>
+  <p id="status">Connecting...</p>
+  <pre id="messages"></pre>
+
+  <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7/bundles/stomp.umd.min.js"></script>
+  <script>
+    const status = document.getElementById("status");
+    const messages = document.getElementById("messages");
+
+    const client = new StompJs.Client({
+      brokerURL: "ws://localhost:8083/ws",
+      reconnectDelay: 5000,
+
+      onConnect: () => {
+        status.textContent = "Connected! Subscribed to /topic/orders";
+
+        client.subscribe("/topic/orders", (message) => {
+          messages.textContent +=
+            JSON.stringify(JSON.parse(message.body), null, 2) + "\n\n";
+        });
+      },
+
+      onStompError: (frame) => {
+        status.textContent = "STOMP error: " + frame.headers.message;
+      },
+
+      onWebSocketError: () => {
+        status.textContent = "WebSocket connection error";
+      }
+    });
+
+    client.activate();
+  </script>
+</body>
+</html>
