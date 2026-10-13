@@ -3,6 +3,7 @@ package com.sopheak.order_service.service;
 import com.sopheak.order_service.entity.Order;
 import com.sopheak.order_service.repository.OrderRepository;
 import com.sopheak.order_service.messaging.OrderEventProducer;
+import com.sopheak.order_service.messaging.ErrorEventProducer;
 import com.sopheak.order_service.event.OrderCreatedEvent;
 import org.springframework.stereotype.Service;
 
@@ -16,6 +17,10 @@ public class OrderService {
     // (like Kafka)
     // this is for OrderService → Messaging
     private final OrderEventProducer orderEventProducer;
+    // this object is used to publish error events to a messaging system
+    // (like Kafka)
+    // this is for OrderService → Messaging
+    private final ErrorEventProducer errorEventProducer;
 
     // ========================
     // Constructor Injection
@@ -26,11 +31,13 @@ public class OrderService {
     // OrderRepository and OrderEvent
     public OrderService(
             OrderRepository orderRepository,
-            OrderEventProducer orderEventProducer
+            OrderEventProducer orderEventProducer,
+            ErrorEventProducer errorEventProducer
 
     ) {
         this.orderRepository = orderRepository;
         this.orderEventProducer = orderEventProducer;
+        this.errorEventProducer = errorEventProducer;
     }
 
     // this is method to create a new order, save it to the database, and publish an
@@ -39,25 +46,35 @@ public class OrderService {
     public Order createOrder(
             String customerName,
             String productName,
-            Integer quantity) {
-        // Create Order Object
-        // Order
-        // -----------------
-        // customerName = Sopheak
-        // productName = Laptop
-        // quantity = 1
-        Order order = new Order(
-                customerName,
-                productName,
-                quantity);
-        //  Save to Database
-        Order savedOrder = orderRepository.save(order);
-        // Create Kafka Event
+            Integer quantity
+    ) {
+        final Order savedOrder;
+
+        try {
+            Order order = new Order(
+                    customerName,
+                    productName,
+                    quantity
+            );
+
+            savedOrder = orderRepository.save(order);
+
+        } catch (RuntimeException exception) {
+            errorEventProducer.publishError(
+                    "Failed to save order: "
+                            + exception.getClass().getSimpleName(),
+                    "CRITICAL"
+            );
+
+            throw exception;
+        }
+
         OrderCreatedEvent event = new OrderCreatedEvent(
                 savedOrder.getId(),
                 savedOrder.getCustomerName(),
                 savedOrder.getProductName(),
-                savedOrder.getQuantity());
+                savedOrder.getQuantity()
+        );
 
         orderEventProducer.publishOrderCreated(event);
 
