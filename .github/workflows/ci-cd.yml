@@ -1,72 +1,126 @@
-
-name: WebSocket Kafka Microservices DevSecOps
+name: WebSocket Kafka Microservice CI/CD
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: microservices-ci-${{ github.ref }}
+  group: websocket-kafka-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  JAVA_VERSION: "21"
+  REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/sopheaklaing/websocket-kafka-microservice
 
 jobs:
-  # 1. Build and test all four services
   test:
     name: Test - ${{ matrix.service }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        service:
-          - order-service
-          - inventory-service
-          - notification-service
-          - alert-service
+        include:
+          - service: order-service
+            database: order_db
+          - service: inventory-service
+            database: inventory_db
+          - service: notification-service
+            database: order_db
+          - service: alert-service
+            database: order_db
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: order_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d order_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      kafka:
+        image: apache/kafka:4.1.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_NUM_PARTITIONS: 3
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: "21"
           cache: maven
-          cache-dependency-path: ${{ matrix.service }}/pom.xml
+          cache-dependency-path: |
+            order-service/pom.xml
+            inventory-service/pom.xml
+            notification-service/pom.xml
+            alert-service/pom.xml
+
+      - name: Create inventory database
+        if: matrix.database == 'inventory_db'
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$POSTGRES_CONTAINER_ID" \
+            psql -U postgres -d postgres \
+            -c "CREATE DATABASE inventory_db;"
 
       - name: Run Maven tests
-        run: mvn -B -f "${{ matrix.service }}/pom.xml" test
+        working-directory: ${{ matrix.service }}
+        env:
+          SERVER_PORT: "8081"
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/${{ matrix.database }}
+          SPRING_DATASOURCE_USERNAME: postgres
+          SPRING_DATASOURCE_PASSWORD: postgres
+          SPRING_KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+        run: |
+          chmod +x mvnw
+          ./mvnw -B test
 
-  # 2. Scan Git history for accidentally committed secrets
   gitleaks:
-    name: Gitleaks Secret Scan
+    name: Secret scanning
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout full Git history
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Scan for secrets
+      - name: Gitleaks scan
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # 3. Scan Maven dependencies against the NVD database
   dependency-check:
-    name: OWASP Dependency-Check - ${{ matrix.service }}
+    name: Dependency vulnerability scan
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -76,109 +130,98 @@ jobs:
           - inventory-service
           - notification-service
           - alert-service
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: "21"
           cache: maven
-          cache-dependency-path: ${{ matrix.service }}/pom.xml
 
-      - name: Analyze dependencies
+      - name: OWASP Dependency-Check
+        working-directory: ${{ matrix.service }}
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
-          if [ -z "$NVD_API_KEY" ]; then
-            echo "::error::Configure the NVD_API_KEY repository secret."
-            exit 1
-          fi
-
-          mvn -B -f "${{ matrix.service }}/pom.xml" \
-            org.owasp:dependency-check-maven:13.0.0:check \
+          chmod +x mvnw
+          ./mvnw -B org.owasp:dependency-check-maven:13.0.0:check \
             -DnvdApiKey="$NVD_API_KEY" \
             -DfailBuildOnCVSS=7
 
-  # 4. Analyze all Java services in one SonarQube project
-  sonarqube:
-    name: SonarQube Analysis
-    runs-on: ubuntu-latest
+      - name: Upload dependency report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-report-${{ matrix.service }}
+          path: ${{ matrix.service }}/target/dependency-check-report.html
+          if-no-files-found: ignore
+          retention-days: 14
 
+  sonarqube:
+    name: SonarQube analysis
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: "21"
           cache: maven
 
-      - name: Compile all services
+      - name: Build services for analysis
         run: |
+          set -e
           for service in order-service inventory-service notification-service alert-service; do
-            mvn -B -f "$service/pom.xml" -DskipTests package
+            chmod +x "$service/mvnw"
+            (cd "$service" && ./mvnw -B -DskipTests package)
           done
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v5
         env:
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.projectKey=websocket-kafka-microservice
-            -Dsonar.projectName=WebSocket Kafka Microservice
-            -Dsonar.sources=order-service/src/main/java,inventory-service/src/main/java,notification-service/src/main/java,alert-service/src/main/java
-            -Dsonar.tests=order-service/src/test/java,inventory-service/src/test/java,notification-service/src/test/java,alert-service/src/test/java
-            -Dsonar.java.binaries=order-service/target/classes,inventory-service/target/classes,notification-service/target/classes,alert-service/target/classes
-            -Dsonar.java.test.binaries=order-service/target/test-classes,inventory-service/target/test-classes,notification-service/target/test-classes,alert-service/target/test-classes
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-  # 5. Scan Dockerfiles, GitHub Actions and YAML configurations
   checkov:
-    name: Checkov Infrastructure Scan
+    name: Infrastructure and workflow security
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Checkov Scan
+      - name: Checkov scan
         uses: bridgecrewio/checkov-action@v12
         with:
           directory: .
           framework: dockerfile,github_actions,yaml
-          output_format: cli
           soft_fail: false
+          output_format: cli
 
-  # 6. Scan repository files for known vulnerabilities
   trivy-filesystem:
-    name: Trivy Filesystem Scan
+    name: Trivy filesystem scan
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Trivy Filesystem Scan
-        uses: aquasecurity/trivy-action@0.29.0
+      - name: Scan repository
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
           exit-code: "1"
+          ignore-unfixed: true
 
-  # 7. Build and publish each service image to GHCR
   publish:
-    name: Build and Push - ${{ matrix.service }}
-    runs-on: ubuntu-latest
+    name: Build, scan and publish images
     needs:
       - test
       - gitleaks
@@ -186,22 +229,11 @@ jobs:
       - sonarqube
       - checkov
       - trivy-filesystem
-
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        service:
-          - order-service
-          - inventory-service
-          - notification-service
-          - alert-service
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -209,72 +241,120 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR
+      - name: Calculate image tag
+        id: vars
+        run: echo "tag=sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and scan order-service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./order-service
+          load: true
+          tags: ${{ env.IMAGE_PREFIX }}-order-service:${{ steps.vars.outputs.tag }}
+
+      - name: Trivy order-service image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_PREFIX }}-order-service:${{ steps.vars.outputs.tag }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Build and scan inventory-service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./inventory-service
+          load: true
+          tags: ${{ env.IMAGE_PREFIX }}-inventory-service:${{ steps.vars.outputs.tag }}
+
+      - name: Trivy inventory-service image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_PREFIX }}-inventory-service:${{ steps.vars.outputs.tag }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Build and scan notification-service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./notification-service
+          load: true
+          tags: ${{ env.IMAGE_PREFIX }}-notification-service:${{ steps.vars.outputs.tag }}
+
+      - name: Trivy notification-service image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_PREFIX }}-notification-service:${{ steps.vars.outputs.tag }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Build and scan alert-service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./alert-service
+          load: true
+          tags: ${{ env.IMAGE_PREFIX }}-alert-service:${{ steps.vars.outputs.tag }}
+
+      - name: Trivy alert-service image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_PREFIX }}-alert-service:${{ steps.vars.outputs.tag }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./${{ matrix.service }}
-          file: ./${{ matrix.service }}/Dockerfile
-          push: true
-          tags: |
-            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:latest
-            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:sha-${{ github.sha }}
+      - name: Publish all service images
+        env:
+          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          set -e
+          for service in order-service inventory-service notification-service alert-service; do
+            image="${IMAGE_PREFIX}-${service}"
+            docker push "${image}:${IMAGE_TAG}"
+            docker tag "${image}:${IMAGE_TAG}" "${image}:latest"
+            docker push "${image}:latest"
+          done
 
-      - name: Scan published image
-        uses: aquasecurity/trivy-action@0.29.0
-        with:
-          image-ref: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:sha-${{ github.sha }}
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-
-  # 8. Deploy only after all checks and image scans pass
   deploy:
     name: Deploy to VPS
-    runs-on: ubuntu-latest
     needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
     steps:
-      - name: Deploy with SSH
+      - name: Deploy through SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
           IMAGE_TAG: sha-${{ github.sha }}
-          GHCR_USER: ${{ github.repository_owner }}
-          GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
           VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          envs: IMAGE_TAG,GHCR_USER,GHCR_TOKEN,VPS_APP_DIR
+          envs: GHCR_USER,GHCR_READ_TOKEN,IMAGE_TAG,VPS_APP_DIR
+          script_stop: true
           script: |
             set -eu
-
-            echo "$GHCR_TOKEN" | sudo docker login ghcr.io \
-              -u "$GHCR_USER" --password-stdin
-
             cd "$VPS_APP_DIR"
-
-            test -f docker-compose.prod.yml
-            test -f .env
-
-            sudo env IMAGE_TAG="$IMAGE_TAG" docker compose \
-              --env-file .env \
-              -f docker-compose.prod.yml pull
-
-            sudo env IMAGE_TAG="$IMAGE_TAG" docker compose \
-              --env-file .env \
-              -f docker-compose.prod.yml up -d --remove-orphans
-
-            sudo docker compose \
-              --env-file .env \
-              -f docker-compose.prod.yml ps
+            echo "$GHCR_READ_TOKEN" | sudo docker login ghcr.io \
+              -u "$GHCR_USER" --password-stdin
+            sudo env IMAGE_TAG="$IMAGE_TAG" \
+              docker compose -f docker-compose.prod.yml pull
+            sudo env IMAGE_TAG="$IMAGE_TAG" \
+              docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            sudo docker image prune -f
