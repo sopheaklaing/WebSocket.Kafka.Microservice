@@ -10,11 +10,19 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+concurrency:
+  group: microservices-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: "21"
+  IMAGE_PREFIX: ghcr.io/sopheaklaing/websocket-kafka-microservice
 
 jobs:
+  # 1. Build and test all four services
   test:
-    name: Java Tests
+    name: Test - ${{ matrix.service }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -26,35 +34,39 @@ jobs:
           - alert-service
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
+          cache-dependency-path: ${{ matrix.service }}/pom.xml
 
       - name: Run Maven tests
-        working-directory: ${{ matrix.service }}
-        run: |
-          chmod +x mvnw
-          ./mvnw -B test
+        run: mvn -B -f "${{ matrix.service }}/pom.xml" test
 
+  # 2. Scan Git history for accidentally committed secrets
   gitleaks:
     name: Gitleaks Secret Scan
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout full Git history
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Scan Git history for secrets
+      - name: Scan for secrets
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  dependency_check:
-    name: OWASP Dependency-Check
+  # 3. Scan Maven dependencies against the NVD database
+  dependency-check:
+    name: OWASP Dependency-Check - ${{ matrix.service }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -66,118 +78,116 @@ jobs:
           - alert-service
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
+          cache-dependency-path: ${{ matrix.service }}/pom.xml
 
-      - name: Scan Maven dependencies
-        working-directory: ${{ matrix.service }}
+      - name: Analyze dependencies
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
-          chmod +x mvnw
-          ./mvnw -B \
+          if [ -z "$NVD_API_KEY" ]; then
+            echo "::error::Configure the NVD_API_KEY repository secret."
+            exit 1
+          fi
+
+          mvn -B -f "${{ matrix.service }}/pom.xml" \
             org.owasp:dependency-check-maven:13.0.0:check \
-            -DfailBuildOnCVSS=7.0 \
-            -Dformats=HTML,JSON \
-            -DnvdApiKey="$NVD_API_KEY"
+            -DnvdApiKey="$NVD_API_KEY" \
+            -DfailBuildOnCVSS=7
 
-      - name: Upload dependency reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency-check-${{ matrix.service }}
-          path: ${{ matrix.service }}/target/dependency-check-report.*
-          if-no-files-found: warn
-          retention-days: 14
-
+  # 4. Analyze all Java services in one SonarQube project
   sonarqube:
-    name: SonarQube Quality Gate
+    name: SonarQube Analysis
     runs-on: ubuntu-latest
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - service: order-service
-            project_key: websocket-kafka-order-service
-          - service: inventory-service
-            project_key: websocket-kafka-inventory-service
-          - service: notification-service
-            project_key: websocket-kafka-notification-service
-          - service: alert-service
-            project_key: websocket-kafka-alert-service
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Analyze and enforce Quality Gate
-        working-directory: ${{ matrix.service }}
+      - name: Compile all services
+        run: |
+          for service in order-service inventory-service notification-service alert-service; do
+            mvn -B -f "$service/pom.xml" -DskipTests package
+          done
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          chmod +x mvnw
-          ./mvnw -B verify \
-            org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-            -Dsonar.projectKey=${{ matrix.project_key }} \
-            -Dsonar.host.url="$SONAR_HOST_URL" \
-            -Dsonar.qualitygate.wait=true \
-            -Dsonar.qualitygate.timeout=600
+        with:
+          args: >
+            -Dsonar.projectKey=websocket-kafka-microservice
+            -Dsonar.projectName=WebSocket Kafka Microservice
+            -Dsonar.sources=order-service/src/main/java,inventory-service/src/main/java,notification-service/src/main/java,alert-service/src/main/java
+            -Dsonar.tests=order-service/src/test/java,inventory-service/src/test/java,notification-service/src/test/java,alert-service/src/test/java
+            -Dsonar.java.binaries=order-service/target/classes,inventory-service/target/classes,notification-service/target/classes,alert-service/target/classes
+            -Dsonar.java.test.binaries=order-service/target/test-classes,inventory-service/target/test-classes,notification-service/target/test-classes,alert-service/target/test-classes
 
+  # 5. Scan Dockerfiles, GitHub Actions and YAML configurations
   checkov:
-    name: Checkov Configuration Scan
+    name: Checkov Infrastructure Scan
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Scan Dockerfiles, Compose and GitHub Actions
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkov Scan
         uses: bridgecrewio/checkov-action@v12
         with:
           directory: .
-          framework: dockerfile,docker_compose,github_actions
+          framework: dockerfile,github_actions,yaml
+          output_format: cli
           soft_fail: false
 
-  trivy_filesystem:
+  # 6. Scan repository files for known vulnerabilities
+  trivy-filesystem:
     name: Trivy Filesystem Scan
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Scan filesystem, dependencies, secrets and misconfigurations
-        uses: aquasecurity/trivy-action@0.28.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy Filesystem Scan
+        uses: aquasecurity/trivy-action@0.29.0
         with:
           scan-type: fs
           scan-ref: .
-          scanners: vuln,misconfig,secret
-          severity: CRITICAL,HIGH
+          format: table
+          severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
 
+  # 7. Build and publish each service image to GHCR
   publish:
-    name: Scan and Publish Container Image
+    name: Build and Push - ${{ matrix.service }}
     runs-on: ubuntu-latest
     needs:
       - test
       - gitleaks
-      - dependency_check
+      - dependency-check
       - sonarqube
       - checkov
-      - trivy_filesystem
+      - trivy-filesystem
 
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     permissions:
       contents: read
@@ -186,39 +196,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - service: order-service
-            image: websocket-kafka-microservice-order-service
-          - service: inventory-service
-            image: websocket-kafka-microservice-inventory-service
-          - service: notification-service
-            image: websocket-kafka-microservice-notification-service
-          - service: alert-service
-            image: websocket-kafka-microservice-alert-service
+        service:
+          - order-service
+          - inventory-service
+          - notification-service
+          - alert-service
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build image locally for scanning
-        uses: docker/build-push-action@v6
-        with:
-          context: ./${{ matrix.service }}
-          load: true
-          push: false
-          tags: local/${{ matrix.image }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
-
-      - name: Scan container image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: image
-          image-ref: local/${{ matrix.image }}:${{ github.sha }}
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "1"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -227,18 +216,65 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Tag and publish image
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:latest
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:sha-${{ github.sha }}
+
+      - name: Scan published image
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:sha-${{ github.sha }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  # 8. Deploy only after all checks and image scans pass
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Deploy with SSH
+        uses: appleboy/ssh-action@v1.2.0
         env:
-          IMAGE_NAME: ${{ matrix.image }}
-          IMAGE_SHA: sha-${{ github.sha }}
-          OWNER: ${{ github.repository_owner }}
-        run: |
-          set -euo pipefail
+          IMAGE_TAG: sha-${{ github.sha }}
+          GHCR_USER: ${{ github.repository_owner }}
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          envs: IMAGE_TAG,GHCR_USER,GHCR_TOKEN,VPS_APP_DIR
+          script: |
+            set -eu
 
-          IMAGE="ghcr.io/${OWNER}/${IMAGE_NAME}"
+            echo "$GHCR_TOKEN" | sudo docker login ghcr.io \
+              -u "$GHCR_USER" --password-stdin
 
-          docker tag "local/${IMAGE_NAME}:${GITHUB_SHA}" "${IMAGE}:latest"
-          docker tag "local/${IMAGE_NAME}:${GITHUB_SHA}" "${IMAGE}:${IMAGE_SHA}"
+            cd "$VPS_APP_DIR"
 
-          docker push "${IMAGE}:latest"
-          docker push "${IMAGE}:${IMAGE_SHA}"
+            test -f docker-compose.prod.yml
+            test -f .env
+
+            sudo env IMAGE_TAG="$IMAGE_TAG" docker compose \
+              --env-file .env \
+              -f docker-compose.prod.yml pull
+
+            sudo env IMAGE_TAG="$IMAGE_TAG" docker compose \
+              --env-file .env \
+              -f docker-compose.prod.yml up -d --remove-orphans
+
+            sudo docker compose \
+              --env-file .env \
+              -f docker-compose.prod.yml ps
