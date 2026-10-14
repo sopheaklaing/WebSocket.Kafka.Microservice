@@ -15,9 +15,13 @@ public class ErrorEventConsumer {
     }
 
     @KafkaListener(
-            topics = "service-errors",
-            groupId = "alert-service"
-    )
+        topics = "service-errors",
+        groupId = "alert-service",
+        properties = {
+                "spring.json.value.default.type=com.sopheak.alert_service.event.ServiceErrorEvent",
+                "spring.json.use.type.headers=false"
+        }
+)
     public void consumeError(ServiceErrorEvent event) {
 
         String message = """

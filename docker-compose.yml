@@ -1,7 +1,7 @@
-services:
 
+services:
   # =========================
-  # PostgreSQL - Order Service
+  # PostgreSQL
   # =========================
   postgres-order:
     image: postgres:17
@@ -13,6 +13,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_order_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
         [
@@ -75,9 +76,14 @@ services:
     environment:
       SERVER_PORT: 8082
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-order:5432/inventory_db
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "8082:8082"
     depends_on:
+      postgres-order:
+        condition: service_healthy
       kafka:
         condition: service_started
     networks:

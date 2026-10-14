@@ -3,41 +3,336 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Notification WebSocket Test</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inventory Product Manager</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background: #f4f6f9;
+      color: #222;
+    }
+
+    h1, h2 {
+      color: #1f2937;
+    }
+
+    .card {
+      background: white;
+      padding: 20px;
+      margin-bottom: 20px;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    }
+
+    label {
+      display: block;
+      margin-top: 12px;
+      font-weight: bold;
+    }
+
+    input, textarea, button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 10px;
+      margin-top: 6px;
+      border-radius: 6px;
+      border: 1px solid #d1d5db;
+      font-size: 15px;
+    }
+
+    textarea {
+      resize: vertical;
+    }
+
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      cursor: pointer;
+      margin-top: 16px;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    .status {
+      padding: 10px;
+      background: #e5e7eb;
+      border-radius: 6px;
+      overflow-wrap: anywhere;
+    }
+
+    .product {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 14px;
+      margin-top: 12px;
+    }
+
+    .product button {
+      background: #dc2626;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+  </style>
 </head>
+
 <body>
-  <h2>Order Notifications</h2>
-  <p id="status">Connecting...</p>
-  <pre id="messages"></pre>
+  <h1>Inventory Product Manager</h1>
+
+  <section class="card">
+    <h2>WebSocket Connection</h2>
+    <p id="wsStatus" class="status">Connecting...</p>
+    <p>Order notifications:</p>
+    <pre id="messages">Waiting for notifications...</pre>
+  </section>
+
+  <section class="card">
+    <h2>Create Product</h2>
+
+    <form id="productForm">
+      <label for="name">Product Name</label>
+      <input
+        id="name"
+        name="name"
+        type="text"
+        maxlength="150"
+        required
+        placeholder="e.g. Laptop"
+      >
+
+      <label for="description">Description</label>
+      <textarea
+        id="description"
+        name="description"
+        maxlength="1000"
+        rows="3"
+        placeholder="Product description"
+      ></textarea>
+
+      <label for="price">Price</label>
+      <input
+        id="price"
+        name="price"
+        type="number"
+        min="0.01"
+        step="0.01"
+        required
+        placeholder="799.99"
+      >
+
+      <label for="stock">Stock Quantity</label>
+      <input
+        id="stock"
+        name="stock"
+        type="number"
+        min="0"
+        step="1"
+        required
+        placeholder="10"
+      >
+
+      <button id="createButton" type="submit">
+        Create Product
+      </button>
+    </form>
+
+    <p id="formStatus" role="status"></p>
+  </section>
+
+  <section class="card">
+    <h2>Products</h2>
+    <button id="refreshButton" type="button">Refresh Products</button>
+    <div id="products">Loading products...</div>
+  </section>
 
   <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7/bundles/stomp.umd.min.js"></script>
-  <script>
-    const status = document.getElementById("status");
-    const messages = document.getElementById("messages");
 
+  <script>
+    const API_URL = "http://localhost:8082/api/products";
+
+    const wsStatus = document.getElementById("wsStatus");
+    const messages = document.getElementById("messages");
+    const productForm = document.getElementById("productForm");
+    const formStatus = document.getElementById("formStatus");
+    const productsContainer = document.getElementById("products");
+    const createButton = document.getElementById("createButton");
+
+    // WebSocket: receive order notifications.
     const client = new StompJs.Client({
       brokerURL: "ws://localhost:8083/ws",
       reconnectDelay: 5000,
 
       onConnect: () => {
-        status.textContent = "Connected! Subscribed to /topic/orders";
+        wsStatus.textContent = "Connected. Subscribed to /topic/orders";
 
         client.subscribe("/topic/orders", (message) => {
-          messages.textContent +=
-            JSON.stringify(JSON.parse(message.body), null, 2) + "\n\n";
+          try {
+            const notification = JSON.parse(message.body);
+            messages.textContent =
+              JSON.stringify(notification, null, 2) +
+              "\n\n" +
+              messages.textContent;
+          } catch {
+            messages.textContent =
+              message.body + "\n\n" + messages.textContent;
+          }
         });
       },
 
       onStompError: (frame) => {
-        status.textContent = "STOMP error: " + frame.headers.message;
+        wsStatus.textContent =
+          "STOMP error: " + (frame.headers.message || "Unknown error");
       },
 
       onWebSocketError: () => {
-        status.textContent = "WebSocket connection error";
+        wsStatus.textContent = "WebSocket connection error";
+      },
+
+      onWebSocketClose: () => {
+        wsStatus.textContent = "WebSocket disconnected. Reconnecting...";
       }
     });
 
+    client.onWebSocketError = () => {
+      wsStatus.textContent = "WebSocket connection error";
+    };
+
     client.activate();
+
+    // Create a product through the REST API.
+    productForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const product = {
+        name: document.getElementById("name").value.trim(),
+        description: document.getElementById("description").value.trim(),
+        price: Number(document.getElementById("price").value),
+        stock: Number(document.getElementById("stock").value)
+      };
+
+      createButton.disabled = true;
+      formStatus.textContent = "Creating product...";
+
+      try {
+        const response = await fetch(API_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(product)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(
+            `HTTP ${response.status}: ${errorText || response.statusText}`
+          );
+        }
+
+        const createdProduct = await response.json();
+
+        formStatus.textContent =
+          `Product created successfully! ID: ${createdProduct.id}`;
+
+        productForm.reset();
+        await loadProducts();
+      } catch (error) {
+        formStatus.textContent =
+          "Failed to create product: " + error.message +
+          ". Check API availability and CORS settings.";
+      } finally {
+        createButton.disabled = false;
+      }
+    });
+
+    // Retrieve all products.
+    async function loadProducts() {
+      productsContainer.textContent = "Loading products...";
+
+      try {
+        const response = await fetch(API_URL);
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const products = await response.json();
+        productsContainer.replaceChildren();
+
+        if (products.length === 0) {
+          productsContainer.textContent = "No products found.";
+          return;
+        }
+
+        products.forEach((product) => {
+          const card = document.createElement("div");
+          card.className = "product";
+
+          const title = document.createElement("h3");
+          title.textContent = product.name;
+
+          const description = document.createElement("p");
+          description.textContent =
+            product.description || "No description";
+
+          const price = document.createElement("p");
+          price.textContent = `Price: $${Number(product.price).toFixed(2)}`;
+
+          const stock = document.createElement("p");
+          stock.textContent = `Stock: ${product.stock}`;
+
+          const id = document.createElement("small");
+          id.textContent = `Product ID: ${product.id}`;
+
+          const deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.textContent = "Delete Product";
+
+          deleteButton.addEventListener("click", async () => {
+            if (!confirm(`Delete product "${product.name}"?`)) {
+              return;
+            }
+
+            deleteButton.disabled = true;
+
+            try {
+              const response = await fetch(`${API_URL}/${product.id}`, {
+                method: "DELETE"
+              });
+
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+              }
+
+              await loadProducts();
+            } catch (error) {
+              alert("Failed to delete product: " + error.message);
+              deleteButton.disabled = false;
+            }
+          });
+
+          card.append(title, description, price, stock, id, deleteButton);
+          productsContainer.appendChild(card);
+        });
+      } catch (error) {
+        productsContainer.textContent =
+          "Failed to load products: " + error.message;
+      }
+    }
+
+    document.getElementById("refreshButton")
+      .addEventListener("click", loadProducts);
+
+    loadProducts();
   </script>
 </body>
 </html>
