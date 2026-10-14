@@ -331,6 +331,7 @@ jobs:
             docker push "${image}:latest"
           done
 
+ 
   deploy:
     name: Deploy to VPS
     needs: publish
@@ -338,6 +339,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate VPS configuration
+        shell: bash
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          set -eu
+
+          for name in VPS_USER VPS_HOST VPS_SSH_KEY VPS_APP_DIR GHCR_USER GHCR_READ_TOKEN; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name secret is empty or unavailable"
+              exit 1
+            fi
+          done
+
+          echo "Required deployment secrets are configured."
+
       - name: Deploy through SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
@@ -352,18 +374,46 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           envs: GHCR_USER,GHCR_READ_TOKEN,IMAGE_TAG,VPS_APP_DIR
           script_stop: true
-          
+          command_timeout: 10m
           script: |
             set -eu
 
+            echo "Starting deployment..."
+            echo "Image tag: $IMAGE_TAG"
+
             cd "$VPS_APP_DIR"
 
-            echo "$GHCR_READ_TOKEN" | sudo /usr/bin/docker login ghcr.io \
+            if [ ! -f docker-compose.prod.yml ]; then
+              echo "ERROR: docker-compose.prod.yml not found in $VPS_APP_DIR"
+              exit 1
+            fi
+
+            DEPLOY_ENV_FILE="$(mktemp)"
+            trap 'rm -f "$DEPLOY_ENV_FILE"' EXIT
+
+            printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" > "$DEPLOY_ENV_FILE"
+            chmod 600 "$DEPLOY_ENV_FILE"
+
+            echo "Logging in to GitHub Container Registry..."
+            echo "$GHCR_READ_TOKEN" | sudo -n /usr/bin/docker login ghcr.io \
               -u "$GHCR_USER" --password-stdin
 
-            sudo /usr/bin/docker compose -f docker-compose.prod.yml pull
+            echo "Pulling images for $IMAGE_TAG..."
+            sudo -n /usr/bin/docker compose \
+              --env-file "$DEPLOY_ENV_FILE" \
+              -f docker-compose.prod.yml pull
 
-            sudo /usr/bin/docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            echo "Starting updated services..."
+            sudo -n /usr/bin/docker compose \
+              --env-file "$DEPLOY_ENV_FILE" \
+              -f docker-compose.prod.yml up -d --remove-orphans
 
-            sudo /usr/bin/docker image prune -f
+            echo "Checking running containers..."
+            sudo -n /usr/bin/docker compose \
+              --env-file "$DEPLOY_ENV_FILE" \
+              -f docker-compose.prod.yml ps
 
+            echo "Removing unused Docker images..."
+            sudo -n /usr/bin/docker image prune -f
+
+            echo "Deployment completed successfully."
