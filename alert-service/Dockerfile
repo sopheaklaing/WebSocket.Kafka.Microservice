@@ -1,5 +1,5 @@
 # Build stage
-FROM eclipse-temurin:21-jdk AS builder
+FROM eclipse-temurin:21-jdk-noble AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ exit 1
 RUN mkdir -p /app/healthcheck && javac -d /app/healthcheck docker-healthcheck/HealthCheck.java
 
 # Runtime stage
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21-jre-noble
 
 WORKDIR /app
 
