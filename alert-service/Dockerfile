@@ -6,7 +6,13 @@ WORKDIR /app
 COPY . .
 
 RUN chmod +x mvnw
-RUN ./mvnw clean package -DskipTests
+RUN for attempt in 1 2 3 4 5; do \
+    ./mvnw -U -B clean package -DskipTests && exit 0; \
+    echo "Maven attempt ${attempt} failed; retrying in 10 seconds..."; \
+    sleep 10; \
+done; \
+exit 1
+
 
 # Compile standalone HTTP healthcheck
 RUN mkdir -p /app/healthcheck && javac -d /app/healthcheck docker-healthcheck/HealthCheck.java
