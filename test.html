@@ -1,338 +1,669 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Inventory Product Manager</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Microservices Dashboard | Sopheak</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7/bundles/stomp.umd.min.js"></script>
 
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 900px;
-      margin: 40px auto;
-      padding: 0 20px;
-      background: #f4f6f9;
-      color: #222;
+    :root {
+      color-scheme: dark;
+      --bg: #0b1120;
+      --panel: #131c2e;
+      --border: #273449;
+      --text: #e5edf8;
+      --muted: #94a3b8;
+      --blue: #3b82f6;
+      --green: #22c55e;
+      --red: #f87171;
     }
 
-    h1, h2 {
-      color: #1f2937;
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    main { max-width: 1200px; margin: auto; }
+    h1 { margin-bottom: 6px; }
+    h2 { font-size: 19px; margin-top: 0; }
+    p { line-height: 1.5; }
+    .muted { color: var(--muted); font-size: 13px; }
+    code { color: #93c5fd; overflow-wrap: anywhere; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 18px;
+      margin: 20px 0;
     }
 
     .card {
-      background: white;
+      min-width: 0;
       padding: 20px;
-      margin-bottom: 20px;
-      border-radius: 10px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      margin-bottom: 18px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
     }
 
     label {
       display: block;
-      margin-top: 12px;
-      font-weight: bold;
+      margin: 12px 0 6px;
+      color: #cbd5e1;
+      font-size: 13px;
     }
 
-    input, textarea, button {
-      box-sizing: border-box;
+    input, button {
       width: 100%;
-      padding: 10px;
-      margin-top: 6px;
-      border-radius: 6px;
-      border: 1px solid #d1d5db;
-      font-size: 15px;
+      padding: 11px 12px;
+      border-radius: 7px;
+      font-size: 14px;
     }
 
-    textarea {
-      resize: vertical;
+    input {
+      border: 1px solid var(--border);
+      background: #0b1220;
+      color: var(--text);
     }
 
     button {
-      background: #2563eb;
+      margin-top: 12px;
+      border: 0;
+      background: var(--blue);
       color: white;
-      border: none;
+      font-weight: bold;
       cursor: pointer;
-      margin-top: 16px;
     }
 
-    button:hover {
-      background: #1d4ed8;
-    }
+    button:hover { filter: brightness(1.12); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .secondary { background: #334155; }
+    .danger { background: #991b1b; }
 
     .status {
-      padding: 10px;
-      background: #e5e7eb;
+      display: inline-block;
+      padding: 6px 9px;
       border-radius: 6px;
+      background: #263449;
+      color: var(--muted);
+      font-size: 12px;
       overflow-wrap: anywhere;
     }
 
-    .product {
-      border: 1px solid #e5e7eb;
+    .status.ok { background: #123923; color: #86efac; }
+    .status.error { background: #451b23; color: #fca5a5; }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .row button { width: auto; }
+
+    .item {
+      padding: 12px;
+      margin-top: 10px;
+      border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 14px;
-      margin-top: 12px;
+      background: #0d1728;
+      overflow-wrap: anywhere;
     }
 
-    .product button {
-      background: #dc2626;
-    }
+    .item-title { font-weight: bold; margin-bottom: 6px; }
+    .notification { border-left: 4px solid var(--green); }
+    .empty { color: var(--muted); }
 
-    pre {
+    .log {
+      max-height: 220px;
+      overflow-y: auto;
+      font: 12px/1.6 monospace;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+    }
+
+    .result { font-size: 13px; overflow-wrap: anywhere; }
+    .result.success { color: #86efac; }
+    .result.error { color: #fca5a5; }
+
+    @media (max-width: 600px) {
+      body { padding: 12px; }
+      .card { padding: 15px; }
     }
   </style>
 </head>
 
 <body>
-  <h1>Inventory Product Manager</h1>
+<main>
+  <h1>WebSocket + Kafka Microservices</h1>
+  <p class="muted">
+    Product Manager · Live Order Notifications
+  </p>
 
-  <section class="card">
-    <h2>WebSocket Connection</h2>
-    <p id="wsStatus" class="status">Connecting...</p>
-    <p>Order notifications:</p>
-    <pre id="messages">Waiting for notifications...</pre>
-  </section>
+  <!-- Service Endpoints and WebSocket Status -->
+  <section class="grid">
+    <div class="card">
+      <h2>Service Endpoints</h2>
 
-  <section class="card">
-    <h2>Create Product</h2>
+      <p class="muted">Inventory API</p>
+      <code id="apiUrl"></code>
 
-    <form id="productForm">
-      <label for="name">Product Name</label>
-      <input
-        id="name"
-        name="name"
-        type="text"
-        maxlength="150"
-        required
-        placeholder="e.g. Laptop"
-      >
+      <p class="muted">WebSocket endpoint</p>
+      <code id="wsUrl"></code>
 
-      <label for="description">Description</label>
-      <textarea
-        id="description"
-        name="description"
-        maxlength="1000"
-        rows="3"
-        placeholder="Product description"
-      ></textarea>
+      <p class="muted">
+        STOMP topic: <code>/topic/orders</code>
+      </p>
+    </div>
 
-      <label for="price">Price</label>
-      <input
-        id="price"
-        name="price"
-        type="number"
-        min="0.01"
-        step="0.01"
-        required
-        placeholder="799.99"
-      >
+    <div class="card">
+      <h2>WebSocket Status</h2>
 
-      <label for="stock">Stock Quantity</label>
-      <input
-        id="stock"
-        name="stock"
-        type="number"
-        min="0"
-        step="1"
-        required
-        placeholder="10"
-      >
+      <p>
+        WebSocket:
+        <span id="wsStatus" class="status">Connecting...</span>
+      </p>
 
-      <button id="createButton" type="submit">
-        Create Product
+      <p>
+        STOMP:
+        <span id="stompStatus" class="status">Waiting...</span>
+      </p>
+
+      <p id="lastMessage" class="muted">
+        Waiting for notifications.
+      </p>
+
+      <button id="connectBtn" type="button">Reconnect</button>
+      <button id="disconnectBtn" class="danger" type="button">
+        Disconnect
       </button>
-    </form>
-
-    <p id="formStatus" role="status"></p>
+    </div>
   </section>
 
+  <!-- Create Product -->
+  <section class="grid">
+    <div class="card">
+      <h2>Create Product</h2>
+
+      <form id="productForm">
+        <label for="productName">Product Name</label>
+        <input
+          id="productName"
+          required
+          placeholder="Laptop"
+        />
+
+        <label for="productDescription">Description</label>
+        <input
+          id="productDescription"
+          placeholder="High-performance laptop"
+        />
+
+        <label for="productPrice">Price</label>
+        <input
+          id="productPrice"
+          type="number"
+          min="0.01"
+          step="0.01"
+          required
+          placeholder="899.99"
+        />
+
+        <label for="productStock">Stock</label>
+        <input
+          id="productStock"
+          type="number"
+          min="0"
+          step="1"
+          required
+          placeholder="10"
+        />
+
+        <button id="createProductBtn" type="submit">
+          Create Product
+        </button>
+      </form>
+
+      <p id="productResult" class="result" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <!-- Product List -->
   <section class="card">
-    <h2>Products</h2>
-    <button id="refreshButton" type="button">Refresh Products</button>
-    <div id="products">Loading products...</div>
+    <div class="row">
+      <h2>Products</h2>
+
+      <button
+        id="refreshBtn"
+        class="secondary"
+        type="button"
+      >
+        Refresh Products
+      </button>
+    </div>
+
+    <div id="products">
+      <p class="empty">Loading products...</p>
+    </div>
   </section>
 
-  <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7/bundles/stomp.umd.min.js"></script>
+  <!-- Live Notifications -->
+  <section class="card">
+    <div class="row">
+      <div>
+        <h2>Live Order Notifications</h2>
+        <p class="muted">
+          Messages received from <code>/topic/orders</code>
+        </p>
+      </div>
 
-  <script>
-    const API_URL = "http://localhost:8082/api/products";
+      <button
+        id="clearNotificationsBtn"
+        class="secondary"
+        type="button"
+      >
+        Clear Notifications
+      </button>
+    </div>
 
-    const wsStatus = document.getElementById("wsStatus");
-    const messages = document.getElementById("messages");
-    const productForm = document.getElementById("productForm");
-    const formStatus = document.getElementById("formStatus");
-    const productsContainer = document.getElementById("products");
-    const createButton = document.getElementById("createButton");
+    <div id="messages">
+      <p class="empty">No notifications received yet.</p>
+    </div>
+  </section>
 
-    // WebSocket: receive order notifications.
+  <!-- Debug Logs -->
+  <section class="card">
+    <div class="row">
+      <h2>Debug Logs</h2>
+
+      <button
+        id="clearLogsBtn"
+        class="secondary"
+        type="button"
+      >
+        Clear Logs
+      </button>
+    </div>
+
+    <div id="logs" class="log"></div>
+  </section>
+</main>
+
+<script>
+  // Service URLs
+  const PRODUCT_API =
+    "https://inventory.sopheakdev.online/api/products";
+
+  const WS_URL =
+    "wss://notification.sopheakdev.online/ws";
+
+  const ORDER_TOPIC = "/topic/orders";
+
+  const $ = (id) => document.getElementById(id);
+
+  let stompClient = null;
+
+  $("apiUrl").textContent = PRODUCT_API;
+  $("wsUrl").textContent = WS_URL;
+
+  // UI and Debug Logs
+  function log(message, level = "INFO") {
+    const line = document.createElement("div");
+
+    line.textContent =
+      `[${new Date().toLocaleTimeString()}] [${level}] ${message}`;
+
+    $("logs").prepend(line);
+    console.log(`[${level}] ${message}`);
+  }
+
+  function setStatus(id, message, state = "") {
+    $(id).textContent = message;
+    $(id).className = "status" + (state ? " " + state : "");
+  }
+
+  function showResult(id, message, state = "") {
+    $(id).textContent = message;
+    $(id).className = "result" + (state ? " " + state : "");
+  }
+
+  function pretty(value) {
+    try {
+      return JSON.stringify(JSON.parse(value), null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+
+  async function readResponse(response) {
+    const text = await response.text();
+    let body = text;
+
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      // Keep plain-text response.
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `HTTP ${response.status}: ${
+          typeof body === "string"
+            ? body
+            : JSON.stringify(body)
+        }`
+      );
+    }
+
+    return body;
+  }
+
+  // WebSocket and STOMP
+  function connectWebSocket() {
+    if (stompClient) {
+      const previous = stompClient;
+      stompClient = null;
+
+      previous.deactivate().catch((error) => {
+        log(error.message, "WARN");
+      });
+    }
+
+    setStatus("wsStatus", "Connecting...");
+    setStatus("stompStatus", "Waiting...");
+
+    log("Connecting to " + WS_URL);
+
     const client = new StompJs.Client({
-      brokerURL: "ws://localhost:8083/ws",
+      brokerURL: WS_URL,
       reconnectDelay: 5000,
+      heartbeatIncoming: 10000,
+      heartbeatOutgoing: 10000,
 
       onConnect: () => {
-        wsStatus.textContent = "Connected. Subscribed to /topic/orders";
+        if (stompClient !== client) return;
 
-        client.subscribe("/topic/orders", (message) => {
-          try {
-            const notification = JSON.parse(message.body);
-            messages.textContent =
-              JSON.stringify(notification, null, 2) +
-              "\n\n" +
-              messages.textContent;
-          } catch {
-            messages.textContent =
-              message.body + "\n\n" + messages.textContent;
+        setStatus("wsStatus", "Connected", "ok");
+        setStatus("stompStatus", "Connected", "ok");
+
+        log("STOMP connected.");
+
+        client.subscribe(
+          ORDER_TOPIC,
+          (message) => {
+            $("lastMessage").textContent =
+              "Last message received at " +
+              new Date().toLocaleTimeString();
+
+            log("Message received: " + message.body, "MESSAGE");
+
+            displayNotification(message.body);
           }
-        });
+        );
+
+        log("Subscribed to " + ORDER_TOPIC);
       },
 
       onStompError: (frame) => {
-        wsStatus.textContent =
-          "STOMP error: " + (frame.headers.message || "Unknown error");
+        setStatus("stompStatus", "STOMP Error", "error");
+
+        log(
+          frame.headers?.message ||
+          frame.body ||
+          "Unknown STOMP error",
+          "ERROR"
+        );
       },
 
       onWebSocketError: () => {
-        wsStatus.textContent = "WebSocket connection error";
+        setStatus("wsStatus", "WebSocket Error", "error");
+
+        log(
+          "WebSocket error. Inspect browser DevTools > Network > WS.",
+          "ERROR"
+        );
       },
 
-      onWebSocketClose: () => {
-        wsStatus.textContent = "WebSocket disconnected. Reconnecting...";
+      onWebSocketClose: (event) => {
+        if (stompClient !== client) return;
+
+        setStatus("wsStatus", "Disconnected", "error");
+        setStatus("stompStatus", "Disconnected", "error");
+
+        log(
+          "WebSocket closed: " +
+          event.code + " " + event.reason,
+          "WARN"
+        );
       }
     });
 
-    client.onWebSocketError = () => {
-      wsStatus.textContent = "WebSocket connection error";
-    };
-
+    stompClient = client;
     client.activate();
+  }
 
-    // Create a product through the REST API.
-    productForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
+  function disconnectWebSocket() {
+    if (stompClient) {
+      const current = stompClient;
+      stompClient = null;
 
-      const product = {
-        name: document.getElementById("name").value.trim(),
-        description: document.getElementById("description").value.trim(),
-        price: Number(document.getElementById("price").value),
-        stock: Number(document.getElementById("stock").value)
-      };
-
-      createButton.disabled = true;
-      formStatus.textContent = "Creating product...";
-
-      try {
-        const response = await fetch(API_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(product)
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(
-            `HTTP ${response.status}: ${errorText || response.statusText}`
-          );
-        }
-
-        const createdProduct = await response.json();
-
-        formStatus.textContent =
-          `Product created successfully! ID: ${createdProduct.id}`;
-
-        productForm.reset();
-        await loadProducts();
-      } catch (error) {
-        formStatus.textContent =
-          "Failed to create product: " + error.message +
-          ". Check API availability and CORS settings.";
-      } finally {
-        createButton.disabled = false;
-      }
-    });
-
-    // Retrieve all products.
-    async function loadProducts() {
-      productsContainer.textContent = "Loading products...";
-
-      try {
-        const response = await fetch(API_URL);
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const products = await response.json();
-        productsContainer.replaceChildren();
-
-        if (products.length === 0) {
-          productsContainer.textContent = "No products found.";
-          return;
-        }
-
-        products.forEach((product) => {
-          const card = document.createElement("div");
-          card.className = "product";
-
-          const title = document.createElement("h3");
-          title.textContent = product.name;
-
-          const description = document.createElement("p");
-          description.textContent =
-            product.description || "No description";
-
-          const price = document.createElement("p");
-          price.textContent = `Price: $${Number(product.price).toFixed(2)}`;
-
-          const stock = document.createElement("p");
-          stock.textContent = `Stock: ${product.stock}`;
-
-          const id = document.createElement("small");
-          id.textContent = `Product ID: ${product.id}`;
-
-          const deleteButton = document.createElement("button");
-          deleteButton.type = "button";
-          deleteButton.textContent = "Delete Product";
-
-          deleteButton.addEventListener("click", async () => {
-            if (!confirm(`Delete product "${product.name}"?`)) {
-              return;
-            }
-
-            deleteButton.disabled = true;
-
-            try {
-              const response = await fetch(`${API_URL}/${product.id}`, {
-                method: "DELETE"
-              });
-
-              if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-              }
-
-              await loadProducts();
-            } catch (error) {
-              alert("Failed to delete product: " + error.message);
-              deleteButton.disabled = false;
-            }
-          });
-
-          card.append(title, description, price, stock, id, deleteButton);
-          productsContainer.appendChild(card);
-        });
-      } catch (error) {
-        productsContainer.textContent =
-          "Failed to load products: " + error.message;
-      }
+      current.deactivate().catch((error) => {
+        log("Disconnect failed: " + error.message, "ERROR");
+      });
     }
 
-    document.getElementById("refreshButton")
-      .addEventListener("click", loadProducts);
+    setStatus("wsStatus", "Disconnected");
+    setStatus("stompStatus", "Disconnected");
 
-    loadProducts();
-  </script>
+    log("Disconnected manually.");
+  }
+
+  // Display incoming notifications safely
+  function displayNotification(rawBody) {
+    const container = $("messages");
+
+    container.querySelector(".empty")?.remove();
+
+    const card = document.createElement("article");
+    card.className = "item notification";
+
+    const title = document.createElement("div");
+    title.className = "item-title";
+    title.textContent = "🛒 Order Notification";
+
+    const timestamp = document.createElement("div");
+    timestamp.className = "muted";
+    timestamp.textContent = new Date().toLocaleString();
+
+    const body = document.createElement("pre");
+    body.style.whiteSpace = "pre-wrap";
+    body.style.overflowWrap = "anywhere";
+    body.textContent = pretty(rawBody);
+
+    card.append(title, timestamp, body);
+    container.prepend(card);
+  }
+
+  // Load Products
+  async function loadProducts() {
+    const container = $("products");
+
+    container.replaceChildren();
+
+    const loading = document.createElement("p");
+    loading.className = "empty";
+    loading.textContent = "Loading products...";
+
+    container.append(loading);
+
+    try {
+      const response = await fetch(PRODUCT_API, {
+        headers: {
+          "Accept": "application/json"
+        }
+      });
+
+      const data = await readResponse(response);
+
+      const products = Array.isArray(data)
+        ? data
+        : (
+            data?.content ||
+            data?.data ||
+            data?.products ||
+            []
+          );
+
+      container.replaceChildren();
+
+      if (!Array.isArray(products) || products.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "No products found.";
+
+        container.append(empty);
+        return;
+      }
+
+      products.forEach((product) => {
+        const item = document.createElement("div");
+        item.className = "item";
+
+        const title = document.createElement("div");
+        title.className = "item-title";
+        title.textContent = product.name || "Unnamed product";
+
+        const details = document.createElement("div");
+        details.className = "muted";
+
+        details.textContent =
+          "ID: " + (product.id ?? "N/A") +
+          " | Description: " + (product.description ?? "N/A") +
+          " | Price: " + (product.price ?? "N/A") +
+          " | Stock: " + (product.stock ?? "N/A");
+
+        item.append(title, details);
+        container.append(item);
+      });
+
+      log("Loaded " + products.length + " products.");
+    } catch (error) {
+      container.replaceChildren();
+
+      const message = document.createElement("p");
+      message.className = "empty";
+      message.textContent =
+        "Could not load products: " + error.message;
+
+      container.append(message);
+
+      log("Load products failed: " + error.message, "ERROR");
+    }
+  }
+
+  // Create Product
+  async function createProduct(event) {
+    event.preventDefault();
+
+    const button = $("createProductBtn");
+
+    button.disabled = true;
+
+    showResult("productResult", "Creating product...");
+
+    const payload = {
+      name: $("productName").value.trim(),
+      description: $("productDescription").value.trim(),
+      price: Number($("productPrice").value),
+      stock: Number($("productStock").value)
+    };
+
+    try {
+      const response = await fetch(PRODUCT_API, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await readResponse(response);
+
+      showResult(
+        "productResult",
+        "Product created successfully.",
+        "success"
+      );
+
+      log("Product created: " + JSON.stringify(data));
+
+      $("productForm").reset();
+
+      await loadProducts();
+    } catch (error) {
+      showResult(
+        "productResult",
+        "Create failed: " + error.message,
+        "error"
+      );
+
+      log(
+        "Create product failed: " + error.message,
+        "ERROR"
+      );
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // Event Handlers
+  $("connectBtn").addEventListener(
+    "click",
+    connectWebSocket
+  );
+
+  $("disconnectBtn").addEventListener(
+    "click",
+    disconnectWebSocket
+  );
+
+  $("refreshBtn").addEventListener(
+    "click",
+    loadProducts
+  );
+
+  $("productForm").addEventListener(
+    "submit",
+    createProduct
+  );
+
+  $("clearNotificationsBtn").addEventListener("click", () => {
+    $("messages").replaceChildren();
+
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No notifications displayed.";
+
+    $("messages").append(empty);
+  });
+
+  $("clearLogsBtn").addEventListener("click", () => {
+    $("logs").replaceChildren();
+  });
+
+  // Start Dashboard
+  loadProducts();
+  connectWebSocket();
+</script>
 </body>
 </html>
